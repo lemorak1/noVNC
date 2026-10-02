@@ -5,7 +5,10 @@ describe('UI file uploads', function () {
     let showStatusStub;
 
     beforeEach(function () {
-        sinon.stub(UI, 'getSetting').returns(new URL('/upload', window.location.href).href);
+        sinon.stub(UI, 'getSetting');
+        UI.getSetting.withArgs('file_upload_url')
+            .returns(new URL('/upload', window.location.href).href);
+        UI.getSetting.withArgs('file_upload_token').returns('test-token');
         showStatusStub = sinon.stub(UI, 'showStatus');
         fetchStub = sinon.stub(window, 'fetch');
         UI.fileUploadInProgress = false;
@@ -16,7 +19,7 @@ describe('UI file uploads', function () {
         UI.fileUploadInProgress = false;
     });
 
-    it('sends each dropped file as a multipart POST', async function () {
+    it('sends each dropped file as an authenticated binary POST', async function () {
         fetchStub.resolves({ ok: true });
 
         const files = [
@@ -30,9 +33,11 @@ describe('UI file uploads', function () {
             const [url, options] = fetchStub.getCall(i).args;
             expect(url).to.equal(new URL('/upload', window.location.href).href);
             expect(options.method).to.equal('POST');
-            expect(options.body.get('file').name).to.equal(files[i].name);
+            expect(options.body).to.equal(files[i]);
+            expect(options.headers.Authorization).to.equal('Bearer test-token');
+            expect(options.headers['X-File-Name']).to.equal(encodeURIComponent(files[i].name));
         }
-        expect(showStatusStub).to.have.been.calledWith('Files uploaded successfully', 'normal', 5000);
+        expect(showStatusStub).to.have.been.calledWith('Files queued for transfer', 'normal', 5000);
         expect(UI.fileUploadInProgress).to.be.false;
     });
 
@@ -52,7 +57,7 @@ describe('UI file uploads', function () {
     });
 
     it('rejects unsupported URL schemes', async function () {
-        UI.getSetting.returns('ftp://upload.example/file');
+        UI.getSetting.withArgs('file_upload_url').returns('ftp://upload.example/file');
 
         await UI.uploadFiles([new File(['content'], 'file.txt')]);
 

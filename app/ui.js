@@ -201,6 +201,7 @@ const UI = {
         UI.initSetting('reconnect_delay', 5000);
         UI.initSetting('keep_device_awake', false);
         UI.initSetting('file_upload_url', '');
+        UI.initSetting('file_upload_token', '');
     },
     // Adds a link to the label elements on the corresponding input elements
     setupSettingLabels() {
@@ -420,8 +421,13 @@ const UI = {
         if (files.length === 0) return;
 
         const endpoint = UI.getSetting('file_upload_url');
+        const token = UI.getSetting('file_upload_token');
         if (!endpoint) {
             UI.showStatus(_("Set a file upload URL in Settings"), 'warning', 5000);
+            return;
+        }
+        if (!token) {
+            UI.showStatus(_("Set a file upload token in Settings"), 'warning', 5000);
             return;
         }
         if (UI.fileUploadInProgress) {
@@ -445,14 +451,15 @@ const UI = {
         UI.fileUploadInProgress = true;
         try {
             for (const file of files) {
-                const formData = new FormData();
-                formData.append('file', file, file.name);
-
                 try {
                     const response = await fetch(url.href, {
                         method: 'POST',
-                        body: formData,
-                        credentials: 'same-origin',
+                        headers: {
+                            'Authorization': `Bearer ${token}`,
+                            'Content-Type': 'application/octet-stream',
+                            'X-File-Name': encodeURIComponent(file.name),
+                        },
+                        body: file,
                     });
                     if (!response.ok) {
                         throw new Error(`${response.status} ${response.statusText}`);
@@ -467,7 +474,7 @@ const UI = {
             UI.fileUploadInProgress = false;
         }
 
-        UI.showStatus(_("Files uploaded successfully"), 'normal', 5000);
+        UI.showStatus(_("Files queued for transfer"), 'normal', 5000);
     },
 
     // Add a call to save settings when the element changes,
@@ -510,6 +517,7 @@ const UI = {
         UI.addSettingChangeHandler('reconnect');
         UI.addSettingChangeHandler('reconnect_delay');
         UI.addSettingChangeHandler('file_upload_url');
+        UI.addSettingChangeHandler('file_upload_token');
     },
 
     addFullscreenHandlers() {

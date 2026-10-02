@@ -97,9 +97,12 @@ Currently, the following options are available:
   there unlikely to be any keyboard/mouse activity to keep the device active.
 
 * `file_upload_url` - Optional HTTP(S) endpoint that accepts file uploads.
-  When set, files dropped on the remote desktop are sent as individual
-  `multipart/form-data` POST requests with the field name `file`. See
+  When set with `file_upload_token`, files dropped on the remote desktop are
+  sent as individual authenticated POST requests. See
   [FILE_UPLOAD.md](./FILE_UPLOAD.md) for the endpoint requirements.
+
+* `file_upload_token` - Bearer token used to authenticate the optional file
+  upload endpoint.
 
 ## HTTP serving considerations
 ### Browser cache issue
