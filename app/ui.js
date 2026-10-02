@@ -45,6 +45,9 @@ const UI = {
     lastKeyboardinput: null,
     defaultKeyboardinputLen: 100,
 
+    fileDropDepth: 0,
+    fileUploadInProgress: false,
+
     inhibitReconnect: true,
     reconnectCallback: null,
     reconnectPassword: null,
@@ -128,6 +131,7 @@ const UI = {
         UI.addMachineHandlers();
         UI.addConnectionControlHandlers();
         UI.addClipboardHandlers();
+        UI.addFileUploadHandlers();
         UI.addSettingsHandlers();
         document.getElementById("noVNC_status")
             .addEventListener('click', UI.hideStatus);
@@ -196,6 +200,7 @@ const UI = {
         UI.initSetting('reconnect', false);
         UI.initSetting('reconnect_delay', 5000);
         UI.initSetting('keep_device_awake', false);
+        UI.initSetting('file_upload_url', '');
     },
     // Adds a link to the label elements on the corresponding input elements
     setupSettingLabels() {
@@ -349,6 +354,122 @@ const UI = {
             .addEventListener('change', UI.clipboardSend);
     },
 
+    addFileUploadHandlers() {
+        const container = document.getElementById("noVNC_container");
+        container.addEventListener('dragenter', UI.handleFileDragEnter);
+        container.addEventListener('dragover', UI.handleFileDragOver);
+        container.addEventListener('dragleave', UI.handleFileDragLeave);
+        container.addEventListener('drop', UI.handleFileDrop);
+    },
+
+    hasFileDrop(e) {
+        return e.dataTransfer && Array.from(e.dataTransfer.types).includes('Files');
+    },
+
+    handleFileDragEnter(e) {
+        if (!UI.hasFileDrop(e)) return;
+
+        e.preventDefault();
+        UI.fileDropDepth += 1;
+        UI.showFileDropOverlay();
+    },
+
+    handleFileDragOver(e) {
+        if (!UI.hasFileDrop(e)) return;
+
+        e.preventDefault();
+        e.dataTransfer.dropEffect = 'copy';
+        UI.showFileDropOverlay();
+    },
+
+    handleFileDragLeave(e) {
+        if (!UI.hasFileDrop(e)) return;
+
+        e.preventDefault();
+        UI.fileDropDepth = Math.max(0, UI.fileDropDepth - 1);
+        if (UI.fileDropDepth === 0) {
+            UI.hideFileDropOverlay();
+        }
+    },
+
+    showFileDropOverlay() {
+        const overlay = document.getElementById("noVNC_file_drop_overlay");
+        const message = UI.getSetting('file_upload_url')
+            ? _("Drop files to upload")
+            : _("Set a file upload URL in Settings");
+        overlay.textContent = message;
+        overlay.classList.add("noVNC_active");
+    },
+
+    hideFileDropOverlay() {
+        document.getElementById("noVNC_file_drop_overlay")
+            .classList.remove("noVNC_active");
+    },
+
+    handleFileDrop(e) {
+        if (!UI.hasFileDrop(e)) return;
+
+        e.preventDefault();
+        e.stopPropagation();
+        UI.fileDropDepth = 0;
+        UI.hideFileDropOverlay();
+        UI.uploadFiles(Array.from(e.dataTransfer.files));
+    },
+
+    async uploadFiles(files) {
+        if (files.length === 0) return;
+
+        const endpoint = UI.getSetting('file_upload_url');
+        if (!endpoint) {
+            UI.showStatus(_("Set a file upload URL in Settings"), 'warning', 5000);
+            return;
+        }
+        if (UI.fileUploadInProgress) {
+            UI.showStatus(_("A file upload is already in progress"), 'warning', 5000);
+            return;
+        }
+
+        let url;
+        try {
+            url = new URL(endpoint, window.location.href);
+        } catch {
+            UI.showStatus(_("Invalid file upload URL"), 'error');
+            return;
+        }
+        if (!['http:', 'https:'].includes(url.protocol) ||
+            (window.location.protocol === 'https:' && url.protocol !== 'https:')) {
+            UI.showStatus(_("File upload URL must use HTTP(S), and HTTPS on secure pages"), 'error');
+            return;
+        }
+
+        UI.fileUploadInProgress = true;
+        try {
+            for (const file of files) {
+                const formData = new FormData();
+                formData.append('file', file, file.name);
+
+                try {
+                    const response = await fetch(url.href, {
+                        method: 'POST',
+                        body: formData,
+                        credentials: 'same-origin',
+                    });
+                    if (!response.ok) {
+                        throw new Error(`${response.status} ${response.statusText}`);
+                    }
+                } catch (err) {
+                    Log.Error("File upload failed: " + err);
+                    UI.showStatus(_("File upload failed: ") + file.name + " (" + err + ")", 'error');
+                    return;
+                }
+            }
+        } finally {
+            UI.fileUploadInProgress = false;
+        }
+
+        UI.showStatus(_("Files uploaded successfully"), 'normal', 5000);
+    },
+
     // Add a call to save settings when the element changes,
     // unless the optional parameter changeFunc is used instead.
     addSettingChangeHandler(name, changeFunc) {
@@ -388,6 +509,7 @@ const UI = {
         UI.addSettingChangeHandler('logging', UI.updateLogging);
         UI.addSettingChangeHandler('reconnect');
         UI.addSettingChangeHandler('reconnect_delay');
+        UI.addSettingChangeHandler('file_upload_url');
     },
 
     addFullscreenHandlers() {

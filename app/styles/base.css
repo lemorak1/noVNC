@@ -888,6 +888,27 @@ html {
     content: url("../images/warning.svg") " ";
 }
 
+#noVNC_file_drop_overlay {
+    position: fixed;
+    inset: 5%;
+    z-index: 49;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border: 3px dashed white;
+    border-radius: 12px;
+    color: white;
+    background: rgba(49, 49, 49, 0.85);
+    font-size: 1.5em;
+    pointer-events: none;
+    visibility: hidden;
+    opacity: 0;
+}
+#noVNC_file_drop_overlay.noVNC_active {
+    visibility: visible;
+    opacity: 1;
+}
+
 /* ----------------------------------------
  * Connect dialog
  * ----------------------------------------
