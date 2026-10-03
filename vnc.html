@@ -182,9 +182,10 @@
                     <img alt="" src="app/images/clipboard.svg"> Clipboard
                 </div>
                 <p class="noVNC_subheading">
-                    Edit clipboard content in the textbox below.
+                    Paste text here and press Send, or select received text and copy it.
                 </p>
                 <textarea id="noVNC_clipboard_text" rows=5></textarea>
+                <input id="noVNC_clipboard_send_button" type="button" value="Send">
             </div>
             </div>
 
@@ -252,6 +253,20 @@
                             <li>
                                 <label for="noVNC_setting_file_upload_token">File upload token:</label>
                                 <input id="noVNC_setting_file_upload_token" type="password" value="">
+                            </li>
+                            <li>
+                                <label>
+                                    <input id="noVNC_setting_clipboard_sync" type="checkbox">
+                                    Sync clipboard text through the relay
+                                </label>
+                            </li>
+                            <li>
+                                Clipboard text is sent through the configured relay while connected.
+                                The browser may ask for clipboard permission.
+                            </li>
+                            <li>
+                                <input id="noVNC_file_receiver_approve" type="button"
+                                       value="Approve waiting file receiver">
                             </li>
                             <li><hr></li>
                             <li>

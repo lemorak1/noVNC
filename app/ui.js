@@ -9,7 +9,7 @@
 import * as Log from '../core/util/logging.js';
 import _, { l10n } from './localization.js';
 import { isTouchDevice, isMac, isIOS, isAndroid, isChromeOS, isSafari,
-         hasScrollbarGutter, dragThreshold, browserAsyncClipboardSupport }
+         hasScrollbarGutter, dragThreshold }
     from '../core/util/browser.js';
 import { setCapture, getPointerEvent } from '../core/util/events.js';
 import KeyTable from "../core/input/keysym.js";
@@ -47,6 +47,13 @@ const UI = {
 
     fileDropDepth: 0,
     fileUploadInProgress: false,
+    clipboardSyncRunning: false,
+    clipboardSyncTimer: null,
+    clipboardSyncBusy: false,
+    clipboardSyncLastText: null,
+    clipboardSyncRevision: 0,
+    clipboardSyncRetryDelay: 1000,
+    clipboardSyncRetryNoticeShown: false,
 
     inhibitReconnect: true,
     reconnectCallback: null,
@@ -202,6 +209,7 @@ const UI = {
         UI.initSetting('keep_device_awake', false);
         UI.initSetting('file_upload_url', '');
         UI.initSetting('file_upload_token', '');
+        UI.initSetting('clipboard_sync', false);
     },
     // Adds a link to the label elements on the corresponding input elements
     setupSettingLabels() {
@@ -353,6 +361,12 @@ const UI = {
             .addEventListener('click', UI.toggleClipboardPanel);
         document.getElementById("noVNC_clipboard_text")
             .addEventListener('change', UI.clipboardSend);
+        document.getElementById("noVNC_clipboard_send_button")
+            .addEventListener('click', UI.clipboardSend);
+        document.getElementById("noVNC_setting_clipboard_sync")
+            .addEventListener('change', e => UI.setClipboardSync(e.target.checked));
+        window.addEventListener('focus', UI.clipboardSyncFocus);
+        document.addEventListener('visibilitychange', UI.clipboardSyncFocus);
     },
 
     addFileUploadHandlers() {
@@ -361,6 +375,8 @@ const UI = {
         container.addEventListener('dragover', UI.handleFileDragOver);
         container.addEventListener('dragleave', UI.handleFileDragLeave);
         container.addEventListener('drop', UI.handleFileDrop);
+        document.getElementById("noVNC_file_receiver_approve")
+            .addEventListener('click', UI.approveFileReceiver);
     },
 
     hasFileDrop(e) {
@@ -407,6 +423,74 @@ const UI = {
             .classList.remove("noVNC_active");
     },
 
+    getFileRelayBaseURL(endpoint) {
+        const url = new URL(endpoint, window.location.href);
+        if (!['http:', 'https:'].includes(url.protocol) ||
+            (window.location.protocol === 'https:' && url.protocol !== 'https:')) {
+            throw new Error(_("File upload URL must use HTTP(S), and HTTPS on secure pages"));
+        }
+        if (url.pathname !== '/' && url.pathname !== '/api/upload') {
+            throw new Error(_("File upload URL must be the relay URL or end in /api/upload"));
+        }
+        return new URL(url.origin);
+    },
+
+    async approveFileReceiver() {
+        const endpoint = UI.getSetting('file_upload_url');
+        const token = UI.getSetting('file_upload_token');
+        if (!endpoint || !token) {
+            UI.showStatus(_("Configure the upload URL and token first"), 'warning', 5000);
+            return;
+        }
+
+        let baseURL;
+        try {
+            baseURL = UI.getFileRelayBaseURL(endpoint);
+        } catch (err) {
+            UI.showStatus(err.message, 'error');
+            return;
+        }
+        const headers = { 'Authorization': `Bearer ${token}` };
+
+        try {
+            const response = await fetch(new URL('/api/pair/pending', baseURL), { headers });
+            if (!response.ok) {
+                throw new Error(`${response.status} ${response.statusText}`);
+            }
+            const data = await response.json();
+            if (data.requests.length === 0) {
+                UI.showStatus(_("No receiver is waiting to pair"), 'normal', 5000);
+                return;
+            }
+
+            let approved = 0;
+            for (const request of data.requests) {
+                const age = request.age === 0
+                    ? _("just now")
+                    : _("%d seconds ago").replace("%d", request.age);
+                if (!window.confirm(_("Approve a Linux file receiver requested ") + age + "?")) {
+                    continue;
+                }
+                const approval = await fetch(
+                    new URL(`/api/pair/approve/${request.id}`, baseURL),
+                    { method: 'POST', headers });
+                if (!approval.ok) {
+                    throw new Error(`${approval.status} ${approval.statusText}`);
+                }
+                approved += 1;
+            }
+
+            if (approved > 0) {
+                UI.showStatus(_("File receiver approved"), 'normal', 5000);
+            } else {
+                UI.showStatus(_("No receiver was approved"), 'normal', 5000);
+            }
+        } catch (err) {
+            Log.Error("File receiver pairing failed: " + err);
+            UI.showStatus(_("File receiver pairing failed: ") + err, 'error');
+        }
+    },
+
     handleFileDrop(e) {
         if (!UI.hasFileDrop(e)) return;
 
@@ -435,18 +519,14 @@ const UI = {
             return;
         }
 
-        let url;
+        let baseURL;
         try {
-            url = new URL(endpoint, window.location.href);
-        } catch {
-            UI.showStatus(_("Invalid file upload URL"), 'error');
+            baseURL = UI.getFileRelayBaseURL(endpoint);
+        } catch (err) {
+            UI.showStatus(err.message, 'error');
             return;
         }
-        if (!['http:', 'https:'].includes(url.protocol) ||
-            (window.location.protocol === 'https:' && url.protocol !== 'https:')) {
-            UI.showStatus(_("File upload URL must use HTTP(S), and HTTPS on secure pages"), 'error');
-            return;
-        }
+        const url = new URL('/api/upload', baseURL);
 
         UI.fileUploadInProgress = true;
         try {
@@ -1210,8 +1290,190 @@ const UI = {
     clipboardSend() {
         const text = document.getElementById('noVNC_clipboard_text').value;
         Log.Debug(">> UI.clipboardSend: " + text.substr(0, 40) + "...");
-        UI.rfb.clipboardPasteFrom(text);
+        UI.rfb.clipboardPasteFrom(text, true);
         Log.Debug("<< UI.clipboardSend");
+    },
+
+    async setClipboardSync(enabled) {
+        WebUtil.writeSetting('clipboard_sync', enabled);
+        if (!enabled) {
+            UI.stopClipboardSync();
+            UI.showStatus(_("Clipboard synchronization disabled"), 'normal', 5000);
+            return;
+        }
+
+        const checkbox = document.getElementById('noVNC_setting_clipboard_sync');
+        if (!window.isSecureContext || !navigator.clipboard) {
+            checkbox.checked = false;
+            WebUtil.writeSetting('clipboard_sync', false);
+            UI.showStatus(_("Clipboard sync requires HTTPS and browser clipboard support"), 'error');
+            return;
+        }
+        if (!UI.getSetting('file_upload_url') || !UI.getSetting('file_upload_token')) {
+            checkbox.checked = false;
+            WebUtil.writeSetting('clipboard_sync', false);
+            UI.showStatus(_("Configure the upload URL and token first"), 'warning', 5000);
+            return;
+        }
+
+        try {
+            const initialText = await navigator.clipboard.readText();
+            await navigator.clipboard.writeText(initialText);
+            UI.clipboardSyncLastText = null;
+            UI.clipboardSyncRevision = 0;
+            UI.showStatus(_("Clipboard sync enabled"), 'normal', 5000);
+            if (UI.connected) {
+                UI.startClipboardSync();
+            }
+        } catch (err) {
+            checkbox.checked = false;
+            WebUtil.writeSetting('clipboard_sync', false);
+            UI.showStatus(_("Clipboard permission failed: ") + err, 'error');
+        }
+    },
+
+    startClipboardSync() {
+        if (UI.clipboardSyncRunning || !UI.connected) return;
+        UI.clipboardSyncRunning = true;
+        UI.clipboardSyncBusy = false;
+        UI.clipboardSyncLastText = null;
+        UI.clipboardSyncRevision = 0;
+        UI.clipboardSyncRetryDelay = 1000;
+        UI.clipboardSyncRetryNoticeShown = false;
+        UI.syncClipboard();
+    },
+
+    clipboardSyncFocus() {
+        if (!UI.clipboardSyncRunning || !UI.connected ||
+            document.visibilityState === 'hidden') return;
+        if (UI.clipboardSyncTimer !== null) {
+            clearTimeout(UI.clipboardSyncTimer);
+        }
+        UI.clipboardSyncTimer = setTimeout(UI.syncClipboard, 0);
+    },
+
+    stopClipboardSync() {
+        const releaseSession = UI.clipboardSyncRunning;
+        UI.clipboardSyncRunning = false;
+        if (UI.clipboardSyncTimer !== null) {
+            clearTimeout(UI.clipboardSyncTimer);
+            UI.clipboardSyncTimer = null;
+        }
+        if (releaseSession) {
+            try {
+                const endpoint = UI.getSetting('file_upload_url');
+                const token = UI.getSetting('file_upload_token');
+                const baseURL = UI.getFileRelayBaseURL(endpoint);
+                fetch(new URL('/api/clipboard/active', baseURL), {
+                    method: 'POST',
+                    headers: {
+                        'Authorization': `Bearer ${token}`,
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({ active: false }),
+                    keepalive: true,
+                }).catch(err => Log.Error("Could not stop clipboard relay session: " + err));
+            } catch (err) {
+                Log.Error("Could not stop clipboard relay session: " + err);
+            }
+        }
+        UI.clipboardSyncRetryDelay = 1000;
+        UI.clipboardSyncRetryNoticeShown = false;
+    },
+
+    async syncClipboard() {
+        if (!UI.clipboardSyncRunning || !UI.connected) return;
+        UI.clipboardSyncTimer = null;
+        if (!document.hasFocus() || document.visibilityState === 'hidden') {
+            UI.clipboardSyncTimer = setTimeout(UI.syncClipboard, 1500);
+            return;
+        }
+        if (UI.clipboardSyncBusy) return;
+        UI.clipboardSyncBusy = true;
+        try {
+            const endpoint = UI.getSetting('file_upload_url');
+            const token = UI.getSetting('file_upload_token');
+            const baseURL = UI.getFileRelayBaseURL(endpoint);
+            const headers = { 'Authorization': `Bearer ${token}` };
+            const sessionResponse = await fetch(new URL('/api/clipboard/active', baseURL), {
+                method: 'POST',
+                headers: { ...headers, 'Content-Type': 'application/json' },
+                body: JSON.stringify({ active: true }),
+            });
+            if (!sessionResponse.ok) {
+                const err = new Error(`${sessionResponse.status} ${sessionResponse.statusText}`);
+                err.status = sessionResponse.status;
+                throw err;
+            }
+            const clipboardURL = new URL('/api/clipboard', baseURL);
+            clipboardURL.searchParams.set('since', UI.clipboardSyncRevision);
+            const stateResponse = await fetch(clipboardURL, {
+                headers, cache: 'no-store',
+            });
+            if (!stateResponse.ok) {
+                const err = new Error(`${stateResponse.status} ${stateResponse.statusText}`);
+                err.status = stateResponse.status;
+                throw err;
+            }
+            const state = stateResponse.status === 204
+                ? { revision: UI.clipboardSyncRevision, source: null, text: null }
+                : await stateResponse.json();
+            const localText = await navigator.clipboard.readText();
+            if (state.revision < UI.clipboardSyncRevision) {
+                UI.clipboardSyncRevision = 0;
+                UI.clipboardSyncLastText = null;
+            }
+
+            if (state.source === 'linux' && state.revision > UI.clipboardSyncRevision) {
+                if (localText !== state.text) {
+                    await navigator.clipboard.writeText(state.text);
+                }
+                UI.clipboardSyncLastText = state.text;
+                UI.clipboardSyncRevision = state.revision;
+            } else {
+                if (localText !== UI.clipboardSyncLastText && localText !== state.text) {
+                    const response = await fetch(new URL('/api/clipboard', baseURL), {
+                        method: 'POST',
+                        headers: { ...headers, 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ source: 'browser', text: localText }),
+                    });
+                    if (!response.ok) {
+                        const err = new Error(`${response.status} ${response.statusText}`);
+                        err.status = response.status;
+                        throw err;
+                    }
+                    const updated = await response.json();
+                    UI.clipboardSyncRevision = updated.revision;
+                } else {
+                    UI.clipboardSyncRevision = Math.max(
+                        UI.clipboardSyncRevision, state.revision);
+                }
+                UI.clipboardSyncLastText = localText;
+            }
+            UI.clipboardSyncRetryDelay = 1000;
+            UI.clipboardSyncRetryNoticeShown = false;
+        } catch (err) {
+            if (err.name === 'NotAllowedError' &&
+                (!document.hasFocus() || document.visibilityState === 'hidden')) {
+                UI.clipboardSyncTimer = setTimeout(UI.syncClipboard, 1500);
+            } else if (err.name === 'TypeError' || err.status === 429 || err.status >= 500) {
+                if (!UI.clipboardSyncRetryNoticeShown) {
+                    UI.showStatus(_("Clipboard relay unavailable; retrying"), 'warning', 5000);
+                    UI.clipboardSyncRetryNoticeShown = true;
+                }
+                UI.clipboardSyncTimer = setTimeout(
+                    UI.syncClipboard, UI.clipboardSyncRetryDelay);
+                UI.clipboardSyncRetryDelay = Math.min(UI.clipboardSyncRetryDelay * 2, 30000);
+            } else {
+                UI.stopClipboardSync();
+                UI.showStatus(_("Clipboard sync failed: ") + err, 'error');
+            }
+        } finally {
+            UI.clipboardSyncBusy = false;
+            if (UI.clipboardSyncRunning && UI.connected && UI.clipboardSyncTimer === null) {
+                UI.clipboardSyncTimer = setTimeout(UI.syncClipboard, 1000);
+            }
+        }
     },
 
 /* ------^-------
@@ -1314,13 +1576,13 @@ const UI = {
         UI.rfb.showDotCursor = UI.getSetting('show_dot');
 
         UI.updateViewOnly(); // requires UI.rfb
-        UI.updateClipboard();
     },
 
     disconnect() {
         UI.rfb.disconnect();
 
         UI.connected = false;
+        UI.stopClipboardSync();
 
         // Disable automatic reconnecting
         UI.inhibitReconnect = true;
@@ -1367,6 +1629,9 @@ const UI = {
         UI.updateVisualState('connected');
 
         UI.updateBeforeUnload();
+        if (UI.getSetting('clipboard_sync')) {
+            UI.startClipboardSync();
+        }
 
         // Do this last because it can only be used on rendered elements
         UI.rfb.focus();
@@ -1989,31 +2254,6 @@ const UI = {
             document.getElementById('noVNC_clipboard_button')
                 .classList.remove('noVNC_hidden');
         }
-    },
-
-    updateClipboard() {
-        browserAsyncClipboardSupport()
-            .then((support) => {
-                if (support === 'unsupported') {
-                    // Use fallback clipboard panel
-                    return;
-                }
-                if (support === 'denied' || support === 'available') {
-                    UI.closeClipboardPanel();
-                    document.getElementById('noVNC_clipboard_button')
-                        .classList.add('noVNC_hidden');
-                    document.getElementById('noVNC_clipboard_button')
-                        .removeEventListener('click', UI.toggleClipboardPanel);
-                    document.getElementById('noVNC_clipboard_text')
-                        .removeEventListener('change', UI.clipboardSend);
-                    if (UI.rfb) {
-                        UI.rfb.removeEventListener('clipboard', UI.clipboardReceive);
-                    }
-                }
-            })
-            .catch(() => {
-                // Treat as unsupported
-            });
     },
 
     updateShowDotCursor() {

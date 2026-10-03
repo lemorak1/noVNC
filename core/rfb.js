@@ -504,10 +504,11 @@ export default class RFB extends EventTargetMixin {
         this._canvas.blur();
     }
 
-    clipboardPasteFrom(text) {
+    clipboardPasteFrom(text, forceLegacy = false) {
         if (this._rfbConnectionState !== 'connected' || this._viewOnly) { return; }
 
-        if (this._clipboardServerCapabilitiesFormats[extendedClipboardFormatText] &&
+        if (!forceLegacy &&
+            this._clipboardServerCapabilitiesFormats[extendedClipboardFormatText] &&
             this._clipboardServerCapabilitiesActions[extendedClipboardActionNotify]) {
 
             this._clipboardText = text;
@@ -2335,8 +2336,7 @@ export default class RFB extends EventTargetMixin {
 
     _writeClipboard(text) {
         if (this._viewOnly) return;
-        if (this._asyncClipboard.writeClipboard(text)) return;
-        // Fallback clipboard
+        this._asyncClipboard.writeClipboard(text);
         this.dispatchEvent(
             new CustomEvent("clipboard", {detail: {text: text}})
         );

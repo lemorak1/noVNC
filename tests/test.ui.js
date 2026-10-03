@@ -7,7 +7,7 @@ describe('UI file uploads', function () {
     beforeEach(function () {
         sinon.stub(UI, 'getSetting');
         UI.getSetting.withArgs('file_upload_url')
-            .returns(new URL('/upload', window.location.href).href);
+            .returns(new URL('/', window.location.href).href);
         UI.getSetting.withArgs('file_upload_token').returns('test-token');
         showStatusStub = sinon.stub(UI, 'showStatus');
         fetchStub = sinon.stub(window, 'fetch');
@@ -31,7 +31,7 @@ describe('UI file uploads', function () {
         expect(fetchStub).to.have.been.calledTwice;
         for (let i = 0; i < files.length; i++) {
             const [url, options] = fetchStub.getCall(i).args;
-            expect(url).to.equal(new URL('/upload', window.location.href).href);
+            expect(url).to.equal(new URL('/api/upload', window.location.href).href);
             expect(options.method).to.equal('POST');
             expect(options.body).to.equal(files[i]);
             expect(options.headers.Authorization).to.equal('Bearer test-token');
@@ -64,5 +64,15 @@ describe('UI file uploads', function () {
         expect(fetchStub).to.not.have.been.called;
         expect(showStatusStub).to.have.been.calledWith(
             'File upload URL must use HTTP(S), and HTTPS on secure pages', 'error');
+    });
+
+    it('rejects upload URLs with an unsupported path', async function () {
+        UI.getSetting.withArgs('file_upload_url').returns('https://relay.example/not-the-relay');
+
+        await UI.uploadFiles([new File(['content'], 'file.txt')]);
+
+        expect(fetchStub).to.not.have.been.called;
+        expect(showStatusStub).to.have.been.calledWith(
+            'File upload URL must be the relay URL or end in /api/upload', 'error');
     });
 });

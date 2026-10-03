@@ -589,6 +589,24 @@ describe('Remote Frame Buffer protocol client', function () {
                     client.clipboardPasteFrom('extended test');
                     expect(RFB.messages.extendedClipboardNotify).to.have.been.calledOnce;
                 });
+
+                it('should send a legacy clipboard update when requested', function () {
+                    let data = [3, 0, 0, 0];
+                    const flags = [0x1F, 0x00, 0x00, 0x01];
+                    const fileSizes = [0x00, 0x00, 0x00, 0x1E];
+                    push32(data, toUnsigned32bit(-8));
+                    data = data.concat(flags, fileSizes);
+                    client._sock._websocket._receiveData(new Uint8Array(data));
+                    RFB.messages.clientCutText.resetHistory();
+                    RFB.messages.extendedClipboardNotify.resetHistory();
+
+                    client.clipboardPasteFrom('legacy test', true);
+
+                    expect(RFB.messages.clientCutText).to.have.been.calledOnce;
+                    expect(RFB.messages.clientCutText).to.have.been.calledWith(
+                        client._sock, new Uint8Array([108, 101, 103, 97, 99, 121, 32, 116, 101, 115, 116]));
+                    expect(RFB.messages.extendedClipboardNotify).to.not.have.been.called;
+                });
             });
 
             it('should flush multiple times for large clipboards', function () {
@@ -3467,7 +3485,7 @@ describe('Remote Frame Buffer protocol client', function () {
         });
 
         describe('Normal clipboard handling receive', function () {
-            it('should not dispatch a clipboard event following successful async write clipboard', async function () {
+            it('should dispatch a clipboard event following successful async write clipboard', async function () {
                 client._viewOnly = false;
                 client._asyncClipboard = {
                     writeClipboard: sinon.stub().returns(true),
@@ -3484,9 +3502,9 @@ describe('Remote Frame Buffer protocol client', function () {
                 expect(client._asyncClipboard.writeClipboard.calledOnceWith(
                     expectedStr
                 )).to.be.true;
-                expect(dispatchEventSpy.calledWith(
-                    new CustomEvent("clipboard", {detail: {text: expectedStr}})
-                )).to.be.false;
+                expect(dispatchEventSpy.args.some(([event]) =>
+                    event.type === "clipboard" && event.detail.text === expectedStr
+                )).to.be.true;
             });
 
             it('should dispatch a clipboard event following unsuccessful async write clipboard', async function () {
@@ -3560,7 +3578,7 @@ describe('Remote Frame Buffer protocol client', function () {
                     client._sock._websocket._receiveData(new Uint8Array(data));
                 });
 
-                it('should not dispatch a clipboard event following successful async write clipboard', async function () {
+                it('should dispatch a clipboard event following successful async write clipboard', async function () {
                     client._viewOnly = false;
                     client._asyncClipboard = {
                         writeClipboard: sinon.stub().returns(true),
@@ -3585,9 +3603,9 @@ describe('Remote Frame Buffer protocol client', function () {
                     expect(client._asyncClipboard.writeClipboard.calledOnceWith(
                         expectedData
                     )).to.be.true;
-                    expect(dispatchEventSpy.calledOnceWith(
-                        new CustomEvent("clipboard", {detail: {text: expectedData}})
-                    )).to.be.false;
+                    expect(dispatchEventSpy.args.some(([event]) =>
+                        event.type === "clipboard" && event.detail.text === expectedData
+                    )).to.be.true;
                 });
                 it('should dispatch a clipboard event following unsuccessful async write clipboard', async function () {
                     client._viewOnly = false;

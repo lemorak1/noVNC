@@ -1,1 +1,3 @@
-./utils/novnc_proxy --vnc 5.189.143.14:63193
+#!/usr/bin/env bash
+set -e
+./utils/novnc_proxy --listen 6081 --web /workspaces/noVNC --vnc 5.189.143.14:63193

@@ -3,7 +3,7 @@
 .SH NAME
 novnc_proxy - noVNC proxy server
 .SH SYNOPSIS
-.B novnc_proxy [--listen [HOST:]PORT] [--vnc VNC_HOST:PORT] [--cert CERT] [--ssl-only]
+.B novnc_proxy [--listen [HOST:]PORT] [--vnc VNC_HOST:PORT] [--cert CERT] [--ssl-only] [--no-file-relay]
 
 Starts the WebSockets proxy and a mini-webserver and
 provides a cut-and-paste URL to go to.
@@ -19,6 +19,8 @@ provides a cut-and-paste URL to go to.
     --web WEB             Path to web files (e.g. vnc.html)
                           Default: ./
     --ssl-only            Disable non-https connections.
+    --no-file-relay       Do not start the file/clipboard relay on port 8765.
+                          By default it starts when the relay script is available.
 
     --record FILE         Record traffic to FILE.session.js
 
